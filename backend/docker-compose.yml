@@ -1,0 +1,151 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: seatflow-postgres
+    environment:
+      POSTGRES_USER: seatflow_user
+      POSTGRES_PASSWORD: seatflow_password
+      POSTGRES_DB: seatflow
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seatflow_user -d seatflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - seatflow_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: seatflow-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - seatflow_network
+
+  rabbitmq:
+    image: rabbitmq:4.0-management-alpine
+    container_name: seatflow-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - seatflow_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seatflow-backend
+    env_file:
+      - .env
+    environment:
+      - SEATFLOW_DB_HOST=postgres
+      - SEATFLOW_DB_PORT=5432
+      - SEATFLOW_REDIS_HOST=redis
+      - SEATFLOW_REDIS_PORT=6379
+      - SEATFLOW_RABBIT_HOST=rabbitmq
+      - SEATFLOW_RABBIT_PORT=5672
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - seatflow_network
+    volumes:
+      - ./seatflow:/app/seatflow
+    restart: unless-stopped
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seatflow-celery-worker
+    env_file:
+      - .env
+    environment:
+      - SEATFLOW_DB_HOST=postgres
+      - SEATFLOW_DB_PORT=5432
+      - SEATFLOW_REDIS_HOST=redis
+      - SEATFLOW_REDIS_PORT=6379
+      - SEATFLOW_RABBIT_HOST=rabbitmq
+      - SEATFLOW_RABBIT_PORT=5672
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A seatflow.tasks.celery_app worker --loglevel=info --concurrency=4
+    networks:
+      - seatflow_network
+    volumes:
+      - ./seatflow:/app/seatflow
+    restart: unless-stopped
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seatflow-celery-beat
+    env_file:
+      - .env
+    environment:
+      - SEATFLOW_DB_HOST=postgres
+      - SEATFLOW_DB_PORT=5432
+      - SEATFLOW_REDIS_HOST=redis
+      - SEATFLOW_REDIS_PORT=6379
+      - SEATFLOW_RABBIT_HOST=rabbitmq
+      - SEATFLOW_RABBIT_PORT=5672
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A seatflow.tasks.celery_app beat --loglevel=info
+    networks:
+      - seatflow_network
+    volumes:
+      - ./seatflow:/app/seatflow
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+
+networks:
+  seatflow_network:
+    driver: bridge
